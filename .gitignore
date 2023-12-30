@@ -161,3 +161,5 @@ cython_debug/
 .directory
 *.DS_Store
 data/
+lora-output/
+lora-alpaca/
