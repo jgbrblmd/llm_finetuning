@@ -1,0 +1,42 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "exl2",
+            "type": "python",
+            "request": "launch",
+            "program": "finetune_new.py",
+            "console": "integratedTerminal",
+            "env": {"CUDA_VISIBLE_DEVICES":"4"},
+            "args": ["--base_model", "/nvme/opt/LLM/SOLAR-10.7B-Instruct-v1.0-4.0bpw-h6-exl2-2","--data_path"
+            , "data/alpaca_data.jsonl", "--mode", "exl2"],
+            "justMyCode": false
+        },
+        {
+            "name": "chatglm3",
+            "type": "python",
+            "request": "launch",
+            "program": "chatglm3_ft.py",
+            "console": "integratedTerminal",
+            "env": {"CUDA_VISIBLE_DEVICES":"2"},
+            "args": ["--base_model", "/opt/LLM/ZhipuAI/chatglm3-6b","--data_path"
+            , "data/train.jsonl", "--mode", "4"],
+            "justMyCode": false
+        },
+        {
+            "name": "gptq",
+            "type": "python",
+            "request": "launch",
+            "program": "finetune_new.py",
+            "console": "integratedTerminal",
+            "env": {"CUDA_VISIBLE_DEVICES":"2"},
+            "args": ["--base_model", "/nvme/opt/LLM/SOLAR-10.7B-Instruct-v1.0-GPTQ","--data_path"
+            , "data/alpaca_data.json", "--mode", "gptq", "--group_size", "64"],
+            "justMyCode": false
+        }
+
+    ]
+}

@@ -37,6 +37,7 @@ def load_model_gptq(
     model_id,
     lora_config,
     group_size=128,
+    #group_size=64,
     gradient_checkpointing=False,
     lora_path=None,
     load_lora=True,

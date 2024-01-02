@@ -1,14 +1,16 @@
 import argparse
 import os
 import sys
-from typing import Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 import fire
 import numpy as np
 import torch
+from torch.nn.modules.module import Module
 import transformers
 from datasets import load_dataset
 from peft import LoraConfig, get_peft_model, set_peft_model_state_dict
+
 from transformers import (
     AutoModel,
     AutoModelForCausalLM,
@@ -25,87 +27,6 @@ from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 
 from utils.prompter import AlpacaPrompter, PromptSelector
 from utils.text import load_text_file
-
-def parse_args():
-    parser = argparse.ArgumentParser(description='ChatGLM-6B QLoRA')
-    #parser.add_argument('--train_args_json', type=str, required=True, help='TrainingArguments的json文件')
-    parser.add_argument('--train_args_json', type=str, required=False, help='TrainingArguments的json文件')
-    parser.add_argument('--model_name_or_path', type=str, default='THUDM/chatglm-6b', help='模型id或local path')
-    #parser.add_argument('--train_data_path', type=str, required=True, help='训练数据路径')
-    parser.add_argument('--train_data_path', type=str, required=False, help='训练数据路径')
-    parser.add_argument('--eval_data_path', type=str, default=None, help='验证数据路径')
-    parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--max_input_length', type=int, default=512, help='instruction + input的最大长度')
-    parser.add_argument('--max_output_length', type=int, default=1536, help='output的最大长度')
-    parser.add_argument('--lora_rank', type=int, default=4, help='lora rank')
-    parser.add_argument('--lora_alpha', type=int, default=32, help='lora_alpha')
-    parser.add_argument('--lora_dropout', type=float, default=0.05, help='lora dropout')
-    parser.add_argument('--resume_from_checkpoint', type=str, default=None, help='恢复训练的checkpoint路径')
-    parser.add_argument('--prompt_text', type=str, default='', help='统一添加在所有数据前的指令文本')
-    parser.add_argument('--base_model', type=str, default='', help='统一添加在所有数据前的指令文本')
-    parser.add_argument('--data_path', type=str, default='', help='统一添加在所有数据前的指令文本')
-    parser.add_argument('--output_dir', type=str, default='', help='统一添加在所有数据前的指令文本')
-    parser.add_argument('--compute_dtype', type=str, default='fp32',
-                        choices=['fp32', 'fp16', 'bf16'], help='计算数据类型')
-    return parser.parse_args()
-
-def tokenize_func(example, tokenizer, global_args, ignore_label_id=-100):
-    """单样本tokenize处理"""
-    question = global_args.prompt_text + example['instruction']
-    if example.get('input', None):
-        if example['input'].strip():
-            question += f'''\n{example['input']}'''
-    answer = example['output']
-    q_ids = tokenizer.encode(text=question, add_special_tokens=False)
-    a_ids = tokenizer.encode(text=answer, add_special_tokens=False)
-    if len(q_ids) > global_args.max_input_length - 2:  # 2 - gmask, bos
-        q_ids = q_ids[: global_args.max_input_length - 2]
-    if len(a_ids) > global_args.max_output_length - 1:  # 1 - eos
-        a_ids = a_ids[: global_args.max_output_length - 1]
-    input_ids = tokenizer.build_inputs_with_special_tokens(q_ids, a_ids)
-    # question_length = input_ids.index(tokenizer.bos_token_id)
-    question_length = len(q_ids) + 2  # chatglm1 - gmask, bos, chatglm2 - gmask, sop
-    labels = [ignore_label_id] * question_length + input_ids[question_length:]
-    return {'input_ids': input_ids, 'labels': labels}
-
-
-def get_datset(data_path, tokenizer, global_args):
-    """读取本地数据文件，并tokenize，shuffle，返回datasets.dataset"""
-    data = load_dataset('json', data_files=data_path)
-    column_names = data['train'].column_names
-    dataset = data['train'].map(lambda example: tokenize_func(example, tokenizer, global_args),
-                                batched=False, remove_columns=column_names)
-    dataset = dataset.shuffle(seed=global_args.seed)
-    dataset = dataset.flatten_indices()
-    return dataset
-
-
-class DataCollatorForChatGLM:
-    def __init__(self,
-                 pad_token_id: int,
-                 max_length: int = 2048,
-                 ignore_label_id: int = -100):
-        self.pad_token_id = pad_token_id
-        self.ignore_label_id = ignore_label_id
-        self.max_length = max_length
-
-    def __call__(self, batch_data: List[Dict[str, List]]) -> Dict[str, torch.Tensor]:
-        """根据batch最大长度做padding"""
-        len_list = [len(d['input_ids']) for d in batch_data]
-        batch_max_len = max(len_list)
-        input_ids, labels = [], []
-        for len_of_d, d in sorted(zip(len_list, batch_data), key=lambda x: -x[0]):
-            pad_len = batch_max_len - len_of_d
-            ids = d['input_ids'] + [self.pad_token_id] * pad_len
-            label = d['labels'] + [self.ignore_label_id] * pad_len
-            if batch_max_len > self.max_length:
-                ids = ids[: self.max_length]
-                label = label[: self.max_length]
-            input_ids.append(torch.LongTensor(ids))
-            labels.append(torch.LongTensor(label))
-        input_ids = torch.stack(input_ids)
-        labels = torch.stack(labels)
-        return {'input_ids': input_ids, 'labels': labels}
 
 
 class PeftTrainer(Trainer):
@@ -222,8 +143,8 @@ def train(
     data_path: str = "data/alpaca_data.json",
     output_dir: str = "./lora-alpaca",
     # training hyperparams
-    batch_size: int = 64,
-    micro_batch_size: int = 16,
+    batch_size: int = 4,
+    micro_batch_size: int = 4,
     num_epochs: int = 1,
     learning_rate: float = 3e-4,
     cutoff_len: int = 256,
@@ -257,7 +178,8 @@ def train(
     gradient_checkpointing: bool = False,
     # GPTQ specific params
     gptq_backend: str = "cuda",  # GPTQ backend "cuda" or "triton"
-    gptq_groupsize: int = 128,
+    #gptq_groupsize: int = 128,
+    gptq_groupsize: int = 64,
     # evaluation flag
     eval: bool = False,
 ):
@@ -359,7 +281,7 @@ def train(
                 print(f"Checkpoint {checkpoint_name} not found")
 
     elif mode == "exl2":
-        from utils.loader.exllama_hf_loader import get_lora_exllama
+        from utils.loader.exllama_lora_loader import get_lora_exllama
 
         kwargs = {
             "gradient_checkpointing": gradient_checkpointing,
@@ -382,10 +304,34 @@ def train(
             lora_config,
             **kwargs,
         )
+
+    elif mode == "gptq":
+        from utils.loader.gptq_loader import load_model_gptq
+
+        kwargs = {
+            "gradient_checkpointing": gradient_checkpointing,
+            "device_map": device_map,
+            "group_size": gptq_groupsize,
+            "backend": gptq_backend,
+        }
+        if resume_from_checkpoint:
+            kwargs.update(
+                {
+                    "lora_path": resume_from_checkpoint,
+                    "load_lora": True,
+                    "lora_trainable": True,
+                }
+            )
+            print(f"Restarting from {resume_from_checkpoint}")
+
+        model, tokenizer = load_model_gptq(
+            base_model,
+            lora_config,
+            **kwargs,
+        )
     else:
         raise NotImplementedError(f"Mode '{mode}' is not supported.")
 
-    """
     tokenizer.pad_token_id = 0  # unk. we want this to be different from the eos token
     tokenizer.padding_side = "left"  # Allow batched inference
 
@@ -471,13 +417,6 @@ def train(
         else:
             train_data = data["train"].shuffle().map(generate_and_tokenize_prompt)
             val_data = data["test"].map(generate_and_tokenize_prompt)
-    """
-    # data
-    global_args = parse_args()
-    train_data = get_datset(data_path, tokenizer, global_args)
-    val_data = None
-    if global_args.eval_data_path:
-        eval_dataset = get_datset(global_args.eval_data_path, tokenizer, global_args)
 
     if not ddp and torch.cuda.device_count() > 1:
         # keeps Trainer from trying its own DataParallelism when more than 1 gpu is available
@@ -515,13 +454,9 @@ def train(
             report_to="wandb" if use_wandb else None,
             run_name=wandb_run_name if use_wandb else None,
         ),
-        #data_collator=transformers.DataCollatorForSeq2Seq(
-        #    tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
-        #),
-        data_collator = DataCollatorForChatGLM(pad_token_id=tokenizer.pad_token_id,
-                                      max_length=2048
+        data_collator=transformers.DataCollatorForSeq2Seq(
+            tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
         ),
-
         callbacks=[PeftSavingCallback],
     )
 
