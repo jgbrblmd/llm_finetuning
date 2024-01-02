@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional, Union
 import torch
 from exllamav2 import ExLlamaV2Lora
 from exllamav2 import ExLlamaV2, ExLlamaV2Cache_8bit, ExLlamaV2Config
+from exllamav2.linear import  ExLlamaV2Linear
 from transformers import (
     GenerationConfig,
     LlamaTokenizer,
@@ -15,6 +16,12 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from peft import PeftModel, get_peft_model, LoraConfig
 
+
+class WrapParent(object):
+    def __init__(self, name) -> None:
+        self.name = name
+        self.dict = {}
+
 class WrapExLlamaV2(ExLlamaV2):
 
     def __init__(self, config: ExLlamaV2Config, lora_config: LoraConfig, lazy_load = False):
@@ -22,17 +29,41 @@ class WrapExLlamaV2(ExLlamaV2):
 
         self.lora_config = lora_config
         self.named_dict = {}
+        self.named_parents = {}
+
+    def prepare_inputs_for_generation(self, input_ids, **kwargs):
+        return {"input_ids": input_ids, **kwargs}
+
+    def init_dict(self):
 
         m_dict = self.modules_dict
 
         for m_key in m_dict.keys():
             m = m_dict[m_key]
+            c_name =  m.__class__.__name__
+
+            print ( c_name )
+
             self.named_dict[m_key] = m
 
-    def named_modules(self):
-        #for k, v in self.named_dict.items():
-        #    print (k, v)
+            """
+            if isinstance(m, ExLlamaV2Linear):
+                dq_weights = m.get_weight_tensor_dq()
+                #new_m = torch.nn.Linear(m.in_features, m.out_features, m.has_bias, device=m.device(), dtype=dq_weights.dtype)
+                new_m = torch.nn.Linear(m.in_features, m.out_features, m.has_bias, device='cpu', dtype=dq_weights.dtype)
+                with torch.no_grad():
+                    new_m.weight.copy_(dq_weights.t())
 
+                del dq_weights
+
+                self.named_dict[m_key] = new_m
+            """
+
+
+        #`torch.nn.Linear`, `torch.nn.Embedding`, `torch.nn.Conv2d`, `transformers.pytorch_utils.Conv1D` 
+
+
+    def named_modules(self):
         return self.named_dict.items()
 
 
@@ -47,7 +78,35 @@ class WrapExLlamaV2(ExLlamaV2):
         return parent, target, target_name
     """
     def get_submodule(self, target: str) -> torch.nn.Module:
-        return self.named_modules[target]
+        if target in self.named_dict:
+            m = self.named_dict[target]
+            if self.last_fake_parent is not None:
+                target_name = target.split(".")[-1]
+                if target_name in self.lora_config.target_modules:
+                    if isinstance(m, ExLlamaV2Linear):
+                        dq_weights = m.get_weight_tensor_dq()
+                        #new_m = torch.nn.Linear(m.in_features, m.out_features, m.has_bias, device=m.device(), dtype=dq_weights.dtype)
+                        new_m = torch.nn.Linear(m.in_features, m.out_features, m.has_bias, device='cpu', dtype=dq_weights.dtype)
+                        with torch.no_grad():
+                            new_m.weight.copy_(dq_weights.t())
+
+                        del dq_weights
+                        setattr(self.last_fake_parent, target_name, new_m)
+
+                        self.named_parents[target]= self.last_fake_parent
+
+                        self.last_fake_parent = None
+                        return new_m
+            return m
+        else:
+            # fake parent
+            fake_parent = WrapParent(target)
+            self.last_fake_parent = fake_parent
+            return fake_parent
+
+    def named_parameters(self):
+
+        return {}
 
 class ExllamaHF(PreTrainedModel):
     def __init__(self, config: ExLlamaV2Config):
@@ -115,6 +174,7 @@ class ExllamaHF(PreTrainedModel):
         
         model = WrapExLlamaV2(config, lora_config)
         model.load()
+        model.init_dict()
 
         """
         # from 'oobabooga/text-generation-webui/modules/exllama.py'
