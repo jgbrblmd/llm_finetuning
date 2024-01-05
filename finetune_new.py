@@ -17,6 +17,7 @@ from transformers import (
     BitsAndBytesConfig,
     AutoTokenizer,
     LlamaTokenizer,
+    LlamaConfig,
     Trainer,
     TrainerCallback,
     TrainerControl,
@@ -305,6 +306,10 @@ def train(
             **kwargs,
         )
 
+        conf = LlamaConfig.from_pretrained(f'{base_model}/config.json')
+        model.config = conf
+        model.base_model.config=conf
+
     elif mode == "gptq":
         from utils.loader.gptq_loader import load_model_gptq
 
@@ -426,7 +431,8 @@ def train(
     model.config.use_cache = False
     # sanity check of model saving process
     if int(os.environ.get("LOCAL_RANK", 0)) == 0:
-        model.save_pretrained(output_dir)
+        pass
+        #model.save_pretrained(output_dir)
 
     trainer = PeftTrainer(
         model=model,

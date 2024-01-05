@@ -10,9 +10,9 @@
             "request": "launch",
             "program": "finetune_new.py",
             "console": "integratedTerminal",
-            "env": {"CUDA_VISIBLE_DEVICES":"4"},
+            "env": {"CUDA_VISIBLE_DEVICES": "4", "WANDB_DISABLED": "True"},
             "args": ["--base_model", "/nvme/opt/LLM/SOLAR-10.7B-Instruct-v1.0-4.0bpw-h6-exl2-2","--data_path"
-            , "data/alpaca_data.jsonl", "--mode", "exl2"],
+            , "data/alpaca_data.json", "--mode", "exl2"],
             "justMyCode": false
         },
         {
@@ -21,7 +21,7 @@
             "request": "launch",
             "program": "chatglm3_ft.py",
             "console": "integratedTerminal",
-            "env": {"CUDA_VISIBLE_DEVICES":"2"},
+            "env": {"CUDA_VISIBLE_DEVICES": "4", "WANDB_DISABLED": "True"},
             "args": ["--base_model", "/opt/LLM/ZhipuAI/chatglm3-6b","--data_path"
             , "data/train.jsonl", "--mode", "4"],
             "justMyCode": false
@@ -32,7 +32,7 @@
             "request": "launch",
             "program": "finetune_new.py",
             "console": "integratedTerminal",
-            "env": {"CUDA_VISIBLE_DEVICES":"2"},
+            "env": {"CUDA_VISIBLE_DEVICES": "4", "WANDB_DISABLED": "True"},
             "args": ["--base_model", "/nvme/opt/LLM/SOLAR-10.7B-Instruct-v1.0-GPTQ","--data_path"
             , "data/alpaca_data.json", "--mode", "gptq", "--group_size", "64"],
             "justMyCode": false

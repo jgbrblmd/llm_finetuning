@@ -22,6 +22,18 @@ class WrapParent(object):
         self.name = name
         self.dict = {}
 
+    def __setattr__(self, __name: str, __value: Any) -> None:
+        if __name in ['name', 'dict']:
+            return super.__setattr__(self, __name, __value)
+
+        if isinstance(__value, torch.nn.Linear):
+            #return super.__setattr__(self, __name, __value)
+            return
+
+        print (f'set {__name}: {__value}')
+        self.dict[__name] = __value
+
+
 class WrapExLlamaV2(ExLlamaV2):
 
     def __init__(self, config: ExLlamaV2Config, lora_config: LoraConfig, lazy_load = False):
@@ -38,11 +50,13 @@ class WrapExLlamaV2(ExLlamaV2):
 
         m_dict = self.modules_dict
 
+        self.named_dict = self.modules_dict
+
+        return
+
         for m_key in m_dict.keys():
             m = m_dict[m_key]
             c_name =  m.__class__.__name__
-
-            print ( c_name )
 
             self.named_dict[m_key] = m
 
@@ -86,17 +100,17 @@ class WrapExLlamaV2(ExLlamaV2):
                     if isinstance(m, ExLlamaV2Linear):
                         dq_weights = m.get_weight_tensor_dq()
                         #new_m = torch.nn.Linear(m.in_features, m.out_features, m.has_bias, device=m.device(), dtype=dq_weights.dtype)
-                        new_m = torch.nn.Linear(m.in_features, m.out_features, m.has_bias, device='cpu', dtype=dq_weights.dtype)
+                        initial_linear = torch.nn.Linear(m.in_features, m.out_features, m.has_bias, device='cpu', dtype=dq_weights.dtype)
                         with torch.no_grad():
-                            new_m.weight.copy_(dq_weights.t())
+                            initial_linear.weight.copy_(dq_weights.t())
 
                         del dq_weights
-                        setattr(self.last_fake_parent, target_name, new_m)
+                        setattr(self.last_fake_parent, target_name, initial_linear)
 
                         self.named_parents[target]= self.last_fake_parent
 
                         self.last_fake_parent = None
-                        return new_m
+                        return initial_linear
             return m
         else:
             # fake parent
@@ -107,6 +121,71 @@ class WrapExLlamaV2(ExLlamaV2):
     def named_parameters(self):
 
         return {}
+
+
+    def inject_father(self, full_name, sub_lora):
+
+        mn, layers, layer_idx, block_name, submod_name = full_name.split(".")
+
+        father_name = f'{mn}.{layers}.{layer_idx}'
+
+        found_in_list = False
+        for m in self.modules:
+            if m.key == father_name:
+                target_mod = getattr(m, submod_name)
+                if sub_lora.base_layer == target_mod:
+                    # found
+                    setattr(m, submod_name, sub_lora)
+
+                    for i in range(len(m.submodules)):
+                        if m.submodules[i] == sub_lora.base_layer:
+                            m.submodules[i] = sub_lora
+                            found_in_list = True
+                            print(f'injection is ok: {full_name}')
+                            break
+
+                if not found_in_list:
+                    print (f'error: not found {full_name} in list')
+
+                break
+
+
+    def inject_lora(self):
+
+        for full_name, m_lora in self.named_parents.items():
+            exl2_target = self.modules_dict[full_name]
+            for m_key in m_lora.dict.keys():
+                if full_name.split(".")[-1] == m_key:
+
+                    injected_lora = m_lora.dict[m_key]
+                    fake_linear = injected_lora.base_layer
+                    injected_lora._modules.__delitem__('base_layer')
+                    injected_lora.base_layer = exl2_target
+                    injected_lora._modules['base_layer'] = exl2_target
+
+                    del fake_linear
+
+                    self.inject_father(full_name, injected_lora)
+
+                    #exl2_target.lora_a_tensors[self] = injected_lora.lora_A['default'].weight
+                    #exl2_target.lora_b_tensors[self] = injected_lora.lora_B['default'].weight
+                    break
+
+                print (f'error, no target found: {m_key} {full_name}')
+
+    def forward(self, input_ids, attention_mask=None):
+        """
+        {'input_ids': tensor([[    0,     ...='cuda:0'), 
+        'attention_mask': tensor([[0, 0, 0, 0,...='cuda:0'), 
+        'inputs_embeds': None, 
+        'labels': tensor([[ -100,  -10...='cuda:0'), 
+        'output_attentions': None, 
+        'output_hidden_states': None, 
+        'return_dict': None}
+        """
+    #def forward(self, input_ids, cache=None, input_mask=None, preprocess_only=False, last_id_only=False, loras=None, return_last_state=False, position_offsets=None):
+        return None
+        #return super().forward(input_ids, cache, input_mask, preprocess_only, last_id_only, loras, return_last_state, position_offsets)
 
 class ExllamaHF(PreTrainedModel):
     def __init__(self, config: ExLlamaV2Config):
@@ -244,19 +323,22 @@ def get_lora_exllama(
 ):
 
     lora_ck_path = ""
-    model, tokenizer = load_model_exllama(base, lora_config, lora_ck_path)
+    exl2_model, tokenizer = load_model_exllama(base, lora_config, lora_ck_path)
 
     if load_lora:
         if lora_path:
-            model = PeftModel.from_pretrained(
-                model, lora_path, is_trainable=lora_trainable
+            peft_model = PeftModel.from_pretrained(
+                peft_model, lora_path, is_trainable=lora_trainable
             )
         else:
-            model = get_peft_model(model, lora_config)
+            peft_model = get_peft_model(exl2_model, lora_config)
+
+    
+    exl2_model.inject_lora()
 
     # Scales to half
     print("Fitting x bits scales and zeros to half")
-    for _, m in model.named_modules():
+    for _, m in peft_model.named_modules():
         print(str(type(m)), m)
         if "Autograd4bitQuantLinear" in str(type(m)) or "Linear4bitLt" in str(type(m)):
             if hasattr(m, "is_v1_model") and m.is_v1_model:
@@ -271,4 +353,4 @@ def get_lora_exllama(
     tokenizer.padding_side = "left"
     tokenizer.pad_token = tokenizer.eos_token
 
-    return model, tokenizer
+    return peft_model, tokenizer
